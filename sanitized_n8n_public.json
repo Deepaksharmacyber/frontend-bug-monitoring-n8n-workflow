@@ -1,0 +1,1162 @@
+{
+  "name": "Landing Page QA – Starter (Webhook)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "landing-qa",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "9959c29f-fdb2-40af-a64c-0f68c7522a08",
+      "name": "Landing QA Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1600,
+        544
+      ],
+      "webhookId": "cc18f62a-89b6-4848-bdb7-58ee7358f2d9"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Accept url from multiple places (Webhook groups JSON under \"body\")\nconst j = items[0].json || {};\n\nconst pick = (...vals) => {\n  for (const v of vals) if (typeof v === 'string' && v.trim()) return v.trim();\n  return '';\n};\n\nconst inputUrl = pick(\n  j.url, j.URL, j.link,\n  j.body?.url, j.body?.URL, j.body?.link,\n  j.query?.url, j.params?.url\n);\n\nif (!inputUrl) {\n  throw new Error('No URL found. Send JSON { \"url\": \"https://example.com\" } or use ?url=…');\n}\n\nlet url = inputUrl;\n// Add protocol if missing\nif (!/^https?:\\/\\//i.test(url)) {\n  url = 'https://' + url;\n}\n\n// Basic URL sanity check\nconst ok = /^(https?:)\\/\\/[\\w.-]+(:\\d+)?(\\/.*)?$/i.test(url);\nif (!ok) {\n  throw new Error('Invalid URL format: ' + inputUrl);\n}\n\nreturn [{ json: { url } }];\n"
+      },
+      "id": "3e61814d-8813-43dd-b7a4-49ae41897e71",
+      "name": "Validate URL",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        -1344,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$json[\"url\"]}}",
+        "options": {}
+      },
+      "id": "289c440d-ca0b-40ca-9cce-ac81d6d6f70b",
+      "name": "Check URL (HEAD)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        -1104,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json[\"statusCode\"] || $json[\"status\"] || 200}}",
+              "operation": "smallerEqual",
+              "value2": 399
+            },
+            {
+              "value1": "={{$json[\"statusCode\"] || $json[\"status\"] || 200}}",
+              "operation": "largerEqual",
+              "value2": 200
+            }
+          ]
+        }
+      },
+      "id": "70e85b76-2203-4fa8-abca-b2d901a7917d",
+      "name": "Reachable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -864,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$('Validate URL').item.json.url}}",
+        "options": {}
+      },
+      "id": "ba22b5a5-ea9c-4467-a815-0a501d755558",
+      "name": "Fetch HTML",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        -624,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Simple APA-ish title case checker for H1-H3.\nconst upstream = $('Fetch HTML').item.json; // read from Fetch HTML explicitly\nconst text = typeof upstream === 'string' ? upstream : (upstream.data || upstream.body || '');\n\nconst errors = [];\nconst headings = [];\nconst regex = /<h([1-3])\\b[^>]*>([\\s\\S]*?)<\\/h\\1>/gi;\n\nfunction stripTags(s){ return s.replace(/<[^>]+>/g, '').replace(/\\s+/g,' ').trim(); }\nfunction isTitleCase(s){\n  const small = new Set(['a','an','and','the','but','or','for','nor','on','at','to','from','by','of','in','with','as']);\n  const words = s.split(/\\s+/);\n  return words.every((w,i)=>{\n    const bare = w.replace(/[^A-Za-z0-9']/g,'');\n    if (!bare) return true;\n    if (i===0 || i===words.length-1) return /^[A-Z0-9]/.test(bare);\n    if (small.has(bare.toLowerCase())) return /^[a-z0-9]/.test(bare);\n    return /^[A-Z0-9]/.test(bare);\n  });\n}\n\nlet m;\nwhile ((m = regex.exec(text))){\n  const level = Number(m[1]);\n  const content = stripTags(m[2]);\n  const ok = isTitleCase(content);\n  headings.push({ level, text: content, titleCase: ok });\n  if (!ok) {\n    errors.push({ section: 'Headings', issue: `Heading not in title case (H${level})`, value: content, severity: 'low' });\n  }\n}\n\nreturn [{ json: { headings, headingIssues: errors } }];\n"
+      },
+      "id": "01191416-7e45-4d02-9c20-b60212847d6c",
+      "name": "Heading Style Check",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        0,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "const upstream = $('Fetch HTML').item.json;\nconst text = typeof upstream === 'string' ? upstream : (upstream.data || upstream.body || '');\n\nconst imgRe = /<img\\b[^>]*?src=[\"']([^\"']+)[\"'][^>]*>/gi;\nconst urls = [];\nlet m;\nwhile ((m = imgRe.exec(text))) urls.push(m[1]);\n\nconst issues = [];\nconst images = urls.map(u => {\n  const lower = u.toLowerCase();\n  const isWebp = lower.includes('.webp') || lower.includes('format=webp');\n  if (!isWebp) {\n    issues.push({ section: 'Images', issue: 'Non-WebP image detected', value: u, severity: 'medium' });\n  }\n  return { url: u, isWebp };\n});\n\nreturn [{ json: { images, imageIssues: issues } }];\n"
+      },
+      "id": "9624e9d2-a4ee-4ad7-8f31-5de00b1ed877",
+      "name": "Image Asset Audit",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Build Report — tolerant to Parse Speed Test returning either:\n// A) wrapped object { speedTestRaw, speedTestSummary, speedIssues }\n// B) raw Lighthouse object (has lighthouseVersion, audits, categories, etc.)\n\nconst safe = (fn, fallback = []) => { try { return fn() ?? fallback; } catch { return fallback; } };\n\n// existing checks\nconst headings = safe(() => $('Heading Style Check').item.json.headingIssues, []);\nconst images   = safe(() => $('Image Asset Audit').item.json.imageIssues, []);\nconst fonts    = safe(() => $('Font Compliance Check').item.json.fontIssues, []);\nconst spacing  = safe(() => $('Margin/Padding Check').item.json.spacingIssues, []);\nconst bullets  = safe(() => $('Bullet Point Format Check').item.json.bulletIssues, []);\nconst links    = safe(() => $('Link Analysis').item.json.linkIssues, []);\n\n// Color Compliance\nconst colorCompliance = safe(() => $('Color Compliance Check').item.json.colorCompliance, null);\nconst colorNonCompliant = (colorCompliance && colorCompliance.nonCompliant) ? colorCompliance.nonCompliant : [];\nconst colorIssues = Array.isArray(colorNonCompliant) ? colorNonCompliant.map(ci => {\n  const value = ci.normalizedHex || (ci.rawExamples && ci.rawExamples[0]) || ci.id || 'unknown';\n  return { section: 'Colors', issue: 'Non-brand / non-palette color detected', value, severity: 'medium', details: ci };\n}) : [];\n\n// ---------- Robust Parse Speed Test reading ----------\nconst parseNodeName = 'Parse Speed Test';\nconst parseNode = (typeof $node !== 'undefined' && $node[parseNodeName]) ? $node[parseNodeName] : null;\n\nlet speedRaw = null;\nlet speedSummary = null;\nlet speedIssuesRaw = null;\nlet parseShape = 'none'; // will be one of: 'wrapped', 'rawLighthouse', 'none', 'other'\n\n// helper to detect raw lighthouse object\nfunction looksLikeLighthouse(obj) {\n  if (!obj || typeof obj !== 'object') return false;\n  // crude checks: presence of lighthouseVersion or audits or categories\n  return !!(obj.lighthouseVersion || obj.audits || obj.categories || obj.configSettings);\n}\n\n// attempt direct access if node exists\nif (parseNode) {\n  // 1) Most common: wrapped under item.json\n  try {\n    const itemJson = (parseNode.item && parseNode.item.json) ? parseNode.item.json : (parseNode.json || parseNode);\n    if (itemJson) {\n      // Case A: wrapper keys present\n      if (itemJson.speedTestRaw || itemJson.speedTestSummary || itemJson.speedIssues) {\n        speedRaw = itemJson.speedTestRaw || null;\n        speedSummary = itemJson.speedTestSummary || null;\n        speedIssuesRaw = itemJson.speedIssues || null;\n        parseShape = 'wrapped';\n      } else if (looksLikeLighthouse(itemJson)) {\n        // Case B: the node returned raw Lighthouse object directly\n        speedRaw = itemJson;\n        parseShape = 'rawLighthouse';\n      } else {\n        // maybe node.json is an array with first item holding the object\n        if (Array.isArray(parseNode.json) && parseNode.json.length) {\n          const first = parseNode.json[0];\n          if (first && first.speedTestRaw) {\n            speedRaw = first.speedTestRaw;\n            speedSummary = first.speedTestSummary || null;\n            speedIssuesRaw = first.speedIssues || null;\n            parseShape = 'wrapped';\n          } else if (looksLikeLighthouse(first)) {\n            speedRaw = first;\n            parseShape = 'rawLighthouse';\n          }\n        }\n      }\n    }\n  } catch (e) {\n    // ignore and fall through to scanning\n  }\n}\n\n// if still not found, scan all nodes for fields (fallback)\nif (!speedRaw && typeof $node === 'object') {\n  for (const nm of Object.keys($node)) {\n    try {\n      const n = $node[nm];\n      const j = (n && n.item && n.item.json) ? n.item.json : (n && n.json ? n.json : n);\n      if (!j) continue;\n      if (!speedRaw && j.speedTestRaw) { speedRaw = j.speedTestRaw; parseShape = 'wrapped'; }\n      if (!speedSummary && j.speedTestSummary) speedSummary = j.speedTestSummary;\n      if (!speedIssuesRaw && j.speedIssues) speedIssuesRaw = j.speedIssues;\n      if (!speedRaw && looksLikeLighthouse(j)) { speedRaw = j; parseShape = 'rawLighthouse'; }\n      if (speedRaw) break;\n    } catch (e) { /* ignore */ }\n  }\n}\n\n// normalize defaults\nspeedRaw = speedRaw || null;\nspeedSummary = speedSummary || null;\nspeedIssuesRaw = speedIssuesRaw || null;\n\n// ---------- If we only have raw Lighthouse, derive summary & issues ----------\nconst derivedIssues = [];\nif (parseShape === 'rawLighthouse' && speedRaw) {\n  // derive a small summary\n  try {\n    const lr = speedRaw;\n    const perfScore = lr.categories && lr.categories.performance && (typeof lr.categories.performance.score === 'number') ? Math.round(lr.categories.performance.score * 100) : null;\n    speedSummary = { performanceScore: perfScore, fetchTime: lr.fetchTime || null, lighthouseVersion: lr.lighthouseVersion || null, emulatedFormFactor: (lr.configSettings && lr.configSettings.emulatedFormFactor) || lr.emulatedFormFactor || null };\n    // derive issues similar to Parse Speed Test earlier: perf audits of interest\n    const audits = lr.audits || {};\n    const pickNum = k => (audits[k] && typeof audits[k].numericValue === 'number') ? audits[k].numericValue : null;\n    const push = (s, i, v, sev='medium', d={}) => derivedIssues.push({ section: s, issue: i, value: v, severity: sev, details: d });\n\n    const fcp = pickNum('first-contentful-paint');\n    if (fcp !== null) push('Performance', 'First Contentful Paint', `${Math.round(fcp)} ms`, fcp > 2000 ? 'medium' : 'low', {fcp});\n\n    const lcp = pickNum('largest-contentful-paint');\n    if (lcp !== null) push('Performance', 'Largest Contentful Paint', `${Math.round(lcp)} ms`, lcp > 2500 ? 'medium' : 'low', {lcp});\n\n    const tbt = pickNum('total-blocking-time');\n    if (tbt !== null) push('Performance', 'Total Blocking Time', `${Math.round(tbt)} ms`, tbt > 300 ? 'medium' : 'low', {tbt});\n\n    const cls = pickNum('cumulative-layout-shift');\n    if (cls !== null) push('Performance', 'Cumulative Layout Shift', cls.toFixed(3), cls > 0.1 ? 'medium' : 'low', {cls});\n\n    // audits with details.items → accessibility / tables / list detection\n    for (const [aid, aobj] of Object.entries(audits)) {\n      if (!aobj) continue;\n      const det = aobj.details;\n      if (det && Array.isArray(det.items) && det.items.length) {\n        const title = aobj.title || aid;\n        const items = det.items.slice(0, 20).map(it => it.id || it.node || it.snippet || JSON.stringify(it)).join(', ');\n        push((aid.toLowerCase().includes('aria') || aid.toLowerCase().includes('accessibility')) ? 'Accessibility' : 'Other', title, items, 'medium', { auditId: aid });\n      } else if (aobj.scoreDisplayMode === 'binary') {\n        const title = aobj.title || aid;\n        if (aobj.score === 0 || aobj.score === false) push('Other', `${title} failed`, 'binary fail', 'high', { auditId: aid });\n      }\n    }\n    // use derivedIssues as speedIssuesRaw\n    if (!speedIssuesRaw || (Array.isArray(speedIssuesRaw) && speedIssuesRaw.length === 0)) {\n      speedIssuesRaw = derivedIssues;\n    }\n  } catch (e) {\n    // swallow errors — we'll still proceed with what we have\n  }\n}\n\n// ---------- normalize speedIssues array & final mapping ----------\nlet speedIssues = [];\nif (Array.isArray(speedIssuesRaw)) speedIssues = speedIssuesRaw;\nelse if (speedIssuesRaw) speedIssues = [speedIssuesRaw];\nelse speedIssues = [];\n\nspeedIssues = speedIssues.map(si => {\n  const section = si.section || si.category || 'Performance';\n  const issue   = si.issue || si.title || si.id || 'Performance issue';\n  const value   = (si.value !== undefined && si.value !== null) ? si.value : (si.displayValue || si.score || '');\n  const severity = si.severity || si.severity_level || 'medium';\n  const details = si.details || si.raw || si;\n  return { section, issue, value, severity, details };\n});\n\n// Combine all issues\nconst issues = [\n  ...headings,\n  ...images,\n  ...fonts,\n  ...spacing,\n  ...bullets,\n  ...links,\n  ...colorIssues,\n  ...speedIssues\n];\n\n// Build totals\nconst totals = {\n  issues: issues.length,\n  headings: (Array.isArray(headings) ? headings.length : 0),\n  images: (Array.isArray(images) ? images.length : 0),\n  fonts: (Array.isArray(fonts) ? fonts.length : 0),\n  spacing: (Array.isArray(spacing) ? spacing.length : 0),\n  bullets: (Array.isArray(bullets) ? bullets.length : 0),\n  links: (Array.isArray(links) ? links.length : 0),\n  colors: (Array.isArray(colorIssues) ? colorIssues.length : 0),\n  performance: (Array.isArray(speedIssues) ? speedIssues.length : 0),\n  linksSummary: (function(){ try { return $('Link Analysis').item.json.linksSummary; } catch { return { total: 0, internal: 0, external: 0 }; } })()\n};\n\n// debug hints\nconst debug = {\n  parseNodePresent: !!parseNode,\n  parseShape,\n  foundSpeedRaw: !!speedRaw,\n  foundSpeedSummary: !!speedSummary,\n  foundSpeedIssuesCount: speedIssues.length\n};\n\n// Final report\nreturn [{\n  json: {\n    scannedAt: new Date().toISOString(),\n    url: safe(() => $('Validate URL').item.json.url, '') || '',\n    totals,\n    colorCompliance: colorCompliance || {},\n    speedTestSummary: speedSummary || {},\n    speedTestRaw: speedRaw || {},\n    issues,\n    _debug: debug\n  }\n}];\n"
+      },
+      "id": "66985413-3f47-45bd-b332-1a3f7ee2fb81",
+      "name": "Build Report",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        448,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "4e079cfc-c28d-45b1-97a2-8edd66bac58c",
+      "name": "Return Report",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2752,
+        992
+      ]
+    },
+    {
+      "parameters": {
+        "numberInputs": 8
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        288,
+        384
+      ],
+      "id": "d12ca52d-835e-4f2b-9433-4f20d67c7d81",
+      "name": "Join Checks (Wait for All)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Configure your brand fonts here ----\nconst allowedFonts = [\n  'Inter', 'Poppins', 'Roboto', 'Open Sans'\n];\n// -----------------------------------------\n\nconst upstream = $('Fetch HTML').item.json;\nconst html = typeof upstream === 'string' ? upstream : (upstream.data || upstream.body || '');\nconst fontsFound = new Set();\n\n// helpers\nconst stripQuotes = s => s.replace(/^[\"']|[\"']$/g, '');\nconst mainFamily = s => stripQuotes(s.split(',')[0].trim());\n\n// 1) Inline style=\"font-family: ...\"\nconst inlineRe = /style\\s*=\\s*\"(?:[^\"]*font-family\\s*:\\s*([^;\"}]+)[^\"]*)\"|style\\s*=\\s*'(?:[^']*font-family\\s*:\\s*([^;'}]+)[^']*)'/gi;\nlet m;\nwhile ((m = inlineRe.exec(html))) {\n  const fam = (m[1] || m[2] || '').trim();\n  if (fam) fontsFound.add(mainFamily(fam));\n}\n\n// 2) <style> blocks: font-family: ...\nconst styleBlockRe = /<style[^>]*>([\\s\\S]*?)<\\/style>/gi;\nlet sb;\nwhile ((sb = styleBlockRe.exec(html))) {\n  const css = sb[1];\n  const cssFontRe = /font-family\\s*:\\s*([^;}\"']+)/gi;\n  let fm;\n  while ((fm = cssFontRe.exec(css))) {\n    const fam = (fm[1] || '').trim();\n    if (fam) fontsFound.add(mainFamily(fam));\n  }\n}\n\n// 3) Google Fonts links: infer family names from ?family=\nconst gfRe = /<link[^>]+href=[\"'][^\"']*fonts\\.googleapis\\.com[^\"']*[\"'][^>]*>/gi;\nlet lf;\nwhile ((lf = gfRe.exec(html))) {\n  const tag = lf[0];\n  const hrefMatch = /href=[\"']([^\"']+)[\"']/.exec(tag);\n  if (hrefMatch) {\n    try {\n      const u = new URL(hrefMatch[1], 'https://example.com');\n      const famParam = u.searchParams.get('family');\n      if (famParam) {\n        // e.g. \"Inter:wght@400;700|Poppins:wght@400\"\n        famParam.split('|').forEach(part => {\n          const fam = part.split(':')[0].replace(/\\+/g, ' ').trim();\n          if (fam) fontsFound.add(fam);\n        });\n      }\n    } catch {}\n  }\n}\n\n// Build issues\nconst allowSet = new Set(allowedFonts.map(f => f.toLowerCase()));\nconst uniqueFonts = Array.from(fontsFound);\nconst fontIssues = [];\n\nuniqueFonts.forEach(f => {\n  const ok = allowSet.has(f.toLowerCase());\n  if (!ok) {\n    fontIssues.push({\n      section: 'Fonts',\n      issue: 'Non-compliant font detected',\n      value: f,\n      severity: 'medium'\n    });\n  }\n});\n\n// Also emit an issue if we found zero fonts (likely CSS external; move this to browser phase later)\nif (uniqueFonts.length === 0) {\n  fontIssues.push({\n    section: 'Fonts',\n    issue: 'No font-family detected from HTML alone (may require JS-rendered/computed styles)',\n    value: '',\n    severity: 'low'\n  });\n}\n\nreturn [{ json: { fontsFound: uniqueFonts, fontIssues } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        320
+      ],
+      "id": "6f7b1e5a-5c97-4343-b6f9-e3ef35b85f3a",
+      "name": "Font Compliance Check"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Configurable thresholds ----\nconst MIN_MARGIN = 16;    // px\nconst MIN_PADDING = 12;   // px\nconst ENFORCE_MULTIPLE_OF_4 = true;\n// ---------------------------------\n\nconst upstream = $('Fetch HTML').item.json;\nconst html = typeof upstream === 'string' ? upstream : (upstream.data || upstream.body || '');\nconst issues = [];\n\nconst getAttr = (tag, name) => {\n  const m = new RegExp(`${name}\\\\s*=\\\\s*\"(.*?)\"`, 'i').exec(tag) || new RegExp(`${name}\\\\s*=\\\\s*'(.*?)'`, 'i').exec(tag);\n  return m ? m[1] : '';\n};\nconst selectorPreview = (tag) => {\n  const tagName = (tag.match(/^<\\s*([a-z0-9-]+)/i) || [,'?'])[1];\n  const id = getAttr(tag, 'id');\n  const cls = getAttr(tag, 'class').split(/\\s+/).filter(Boolean).slice(0,2).join('.');\n  let sel = tagName;\n  if (id) sel += `#${id}`;\n  if (cls) sel += `.${cls}`;\n  return sel;\n};\n\nconst pushIssue = (where, prop, val, severity='low') => {\n  issues.push({\n    section: 'Spacing',\n    issue: `Suspicious ${prop} (${val}px)`,\n    value: `${where} → ${prop}:${val}px`,\n    severity\n  });\n};\n\n// 1) Inline styles: <div style=\"margin-top:8px; padding:4px\">\nconst inlineTagRe = /<([a-z0-9-]+)\\b[^>]*\\sstyle\\s*=\\s*(\"([^\"]+)\"|'([^']+)')[^>]*>/gi;\nlet it;\nwhile ((it = inlineTagRe.exec(html))) {\n  const fullTag = it[0];\n  const styleStr = it[3] || it[4] || '';\n  const where = selectorPreview(fullTag);\n\n  // capture margin*/padding* values in px\n  const declRe = /\\b(margin(?:-(top|right|bottom|left))?|padding(?:-(top|right|bottom|left))?)\\s*:\\s*([0-9.]+)\\s*px/gi;\n  let d;\n  while ((d = declRe.exec(styleStr))) {\n    const prop = d[1];\n    const val = parseFloat(d[3]);\n    if (prop.startsWith('margin') && val < MIN_MARGIN) {\n      pushIssue(where, prop, val, val < MIN_MARGIN/2 ? 'medium' : 'low');\n    }\n    if (prop.startsWith('padding') && val < MIN_PADDING) {\n      pushIssue(where, prop, val, val < MIN_PADDING/2 ? 'medium' : 'low');\n    }\n    if (ENFORCE_MULTIPLE_OF_4 && Number.isFinite(val) && val % 4 !== 0) {\n      issues.push({\n        section: 'Spacing',\n        issue: `Non-4pt spacing value`,\n        value: `${where} → ${prop}:${val}px`,\n        severity: 'low'\n      });\n    }\n  }\n}\n\n// 2) <style> blocks (simple pass): selector { margin: 8px; padding: 4px; }\nconst styleBlockRe = /<style[^>]*>([\\s\\S]*?)<\\/style>/gi;\nlet sb;\nwhile ((sb = styleBlockRe.exec(html))) {\n  const css = sb[1];\n  // crude rule matcher: (selector){...}\n  const ruleRe = /([^{]+)\\{([^}]+)\\}/g;\n  let r;\n  while ((r = ruleRe.exec(css))) {\n    const sel = r[1].trim().replace(/\\s+/g,' ').slice(0,80);\n    const body = r[2];\n\n    const declRe = /\\b(margin(?:-(top|right|bottom|left))?|padding(?:-(top|right|bottom|left))?)\\s*:\\s*([0-9.]+)\\s*px/gi;\n    let d;\n    while ((d = declRe.exec(body))) {\n      const prop = d[1];\n      const val = parseFloat(d[3]);\n      if (prop.startsWith('margin') && val < MIN_MARGIN) {\n        pushIssue(sel, prop, val, val < MIN_MARGIN/2 ? 'medium' : 'low');\n      }\n      if (prop.startsWith('padding') && val < MIN_PADDING) {\n        pushIssue(sel, prop, val, val < MIN_PADDING/2 ? 'medium' : 'low');\n      }\n      if (ENFORCE_MULTIPLE_OF_4 && Number.isFinite(val) && val % 4 !== 0) {\n        issues.push({\n          section: 'Spacing',\n          issue: `Non-4pt spacing value`,\n          value: `${sel} → ${prop}:${val}px`,\n          severity: 'low'\n        });\n      }\n    }\n  }\n}\n\nreturn [{ json: { spacingIssues: issues } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        480
+      ],
+      "id": "e55a7022-3b80-440d-a68e-413eae61d141",
+      "name": "Margin/Padding Check"
+    },
+    {
+      "parameters": {
+        "jsCode": "const upstream = $('Fetch HTML').item.json;\nconst html = typeof upstream === 'string' ? upstream : (upstream.data || upstream.body || '');\n\nconst issues = [];\nconst lists = [];\n\n// Extract <ul> and <ol> blocks\nconst listRe = /<(ul|ol)\\b([^>]*)>([\\s\\S]*?)<\\/\\1>/gi;\nlet m;\nwhile ((m = listRe.exec(html))) {\n  const tag = m[1].toLowerCase();\n  const attrs = m[2] || '';\n  const content = m[3] || '';\n\n  // inline list-style / list-style-type\n  const styleMatch = /style\\s*=\\s*\"(.*?)\"|style\\s*=\\s*'(.*?)'/i.exec(attrs);\n  const styleStr = styleMatch ? (styleMatch[1] || styleMatch[2] || '') : '';\n  const typeMatch = /list-style(?:-type)?\\s*:\\s*([^;]+)/i.exec(styleStr);\n  let listStyle = (typeMatch ? typeMatch[1].trim().toLowerCase() : '');\n\n  // \"none\" for custom bullets\n  const isNone = /(^|;)\\s*list-style(?:-type)?\\s*:\\s*none/i.test(styleStr);\n\n  // collect li items (raw text)\n  const liRe = /<li\\b[^>]*>([\\s\\S]*?)<\\/li>/gi;\n  const items = [];\n  let li;\n  while ((li = liRe.exec(content))) {\n    const raw = li[1].replace(/<[^>]+>/g,'').trim();\n    items.push(raw);\n  }\n\n  // detect manual bullets typed into content\n  const manual = items.some(t => /^[-•]\\s+/.test(t));\n\n  // defaults if no inline type\n  if (!listStyle) listStyle = tag === 'ul' ? 'disc' : 'decimal';\n\n  lists.push({ tag, listStyle, isNone, manual, count: items.length });\n}\n\n// Inconsistency across lists\nconst stylesUsed = new Set(lists.map(l => (l.isNone ? 'none' : l.listStyle)));\nif (stylesUsed.size > 1) {\n  issues.push({\n    section: 'Bullets',\n    issue: 'Inconsistent list-style across lists',\n    value: `Found: ${Array.from(stylesUsed).join(', ')}`,\n    severity: 'low'\n  });\n}\n\n// Custom bullets present\nif (lists.some(l => l.isNone)) {\n  issues.push({\n    section: 'Bullets',\n    issue: 'Custom bullets detected (list-style:none)',\n    value: 'One or more lists use custom markers',\n    severity: 'low'\n  });\n}\n\n// Manual bullets inside <li>\nif (lists.some(l => l.manual)) {\n  issues.push({\n    section: 'Bullets',\n    issue: 'Manual bullet characters found in <li> text',\n    value: 'e.g., lines starting with \"-\" or \"•\"',\n    severity: 'low'\n  });\n}\n\n// Empty lists\nif (lists.some(l => l.count === 0)) {\n  issues.push({\n    section: 'Bullets',\n    issue: 'Empty list detected',\n    value: 'A <ul>/<ol> contains zero <li> items',\n    severity: 'low'\n  });\n}\n\nreturn [{ json: { bulletIssues: issues } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        832
+      ],
+      "id": "481d90b6-01da-4fd7-b0dc-e60e3f8bbba0",
+      "name": "Bullet Point Format Check1"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get base URL (to classify internal vs external)\nconst base = $('Validate URL').item.json.url || '';\nlet baseHost = '';\ntry { baseHost = new URL(base).host.toLowerCase(); } catch {}\n\nconst upstream = $('Fetch HTML').item.json;\nconst html = typeof upstream === 'string' ? upstream : (upstream.data || upstream.body || '');\n\nconst linkSet = new Set();\nconst issues = [];\n\nconst aRe = /<a\\b([^>]*)>([\\s\\S]*?)<\\/a>/gi;\nlet m;\nwhile ((m = aRe.exec(html))) {\n  const attrs = m[1] || '';\n\n  // extract href\n  const hrefMatch =\n    /href\\s*=\\s*\"(.*?)\"/i.exec(attrs) ||\n    /href\\s*=\\s*'(.*?)'/i.exec(attrs) ||\n    /href\\s*=\\s*([^\\s>]+)/i.exec(attrs);\n\n  const href = hrefMatch ? (hrefMatch[1] || hrefMatch[0].split('=').pop()).replace(/^['\"]|['\"]$/g,'').trim() : '';\n\n  if (!href) {\n    issues.push({\n      section: 'Links',\n      issue: 'Anchor without href',\n      value: '<a>…</a>',\n      severity: 'low'\n    });\n    continue;\n  }\n\n  // normalize & classify\n  let type = 'external';\n  try {\n    const url = new URL(href, base || 'https://dummy.local');\n    const host = (url.host || '').toLowerCase();\n    if (baseHost && host === baseHost) type = 'internal';\n\n    // collect unique by absolute href\n    const abs = url.href;\n    linkSet.add(JSON.stringify({ href: abs, type }));\n\n  } catch {\n    // relative without base is still probably internal\n    if (href.startsWith('#')) {\n      issues.push({\n        section: 'Links',\n        issue: 'Fragment-only link',\n        value: href,\n        severity: 'low'\n      });\n    } else {\n      linkSet.add(JSON.stringify({ href, type: 'internal' }));\n    }\n  }\n\n  // Soft flags\n  if (/^mailto:/i.test(href)) {\n    issues.push({ section: 'Links', issue: 'mailto link present', value: href, severity: 'low' });\n  }\n  if (/^tel:/i.test(href)) {\n    issues.push({ section: 'Links', issue: 'tel link present', value: href, severity: 'low' });\n  }\n  if (/^javascript:/i.test(href)) {\n    issues.push({ section: 'Links', issue: 'javascript: link detected', value: href, severity: 'low' });\n  }\n}\n\n// Build summary arrays\nconst uniqueLinks = Array.from(linkSet).map(s => JSON.parse(s));\nconst internals = uniqueLinks.filter(l => l.type === 'internal').length;\nconst externals = uniqueLinks.filter(l => l.type === 'external').length;\n\nreturn [{\n  json: {\n    linksFound: uniqueLinks,             // [{href,type}]\n    linksSummary: { total: uniqueLinks.length, internal: internals, external: externals },\n    linkIssues: issues                   // soft issues found during parsing\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        1024
+      ],
+      "id": "b34cccb8-890b-4059-81f0-44a351ae1f92",
+      "name": "Link Analysis"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        -1456,
+        736
+      ],
+      "id": "1938d489-24a2-49e3-96c9-cd21bb52ed53",
+      "name": "Return OK"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Color Compliance Check (n8n Code node)\n// Config: edit allowedPalette above to your brand hex colors (lowercase, 6-digit)\nconst allowedPalette = [\n  '#0a84ff', // example: brand blue\n  '#ff6b6b', // example: brand red\n  '#0f172a', // example: brand dark\n  '#ffffff'  // white\n].map(s => s.toLowerCase());\n\n// --- helpers: parsing and normalization ---\nconst upstream = $('Fetch HTML').item.json;\nconst html = typeof upstream === 'string' ? upstream : (upstream.data || upstream.body || '');\n\nconst results = {\n  scannedAt: new Date().toISOString(),\n  url: $('Validate URL').item.json.url || '',\n  colorsFound: [],          // { raw, normalizedHex, where }\n  nonCompliant: [],        // subset not in allowedPalette\n  palette: allowedPalette\n};\n\n// tiny utility: expand 3-digit hex to 6-digit\nfunction expandHex(h) {\n  if (h.length === 4) {\n    return '#' + h[1] + h[1] + h[2] + h[2] + h[3] + h[3];\n  }\n  return h;\n}\n\n// clamp helper\nfunction clamp(v, a=0, b=255){ return Math.max(a, Math.min(b, v)); }\n\n// parse rgb/rgba to hex\nfunction rgbToHex(str) {\n  // accept \"rgb(12,34,56)\" or \"rgba(12,34,56,0.5)\"\n  const m = /rgba?\\s*\\(\\s*([0-9.%]+)\\s*,\\s*([0-9.%]+)\\s*,\\s*([0-9.%]+)(?:\\s*,\\s*([0-9.]+))?\\s*\\)/i.exec(str);\n  if (!m) return null;\n  // support percentages (e.g. 50%)\n  const conv = (v) => v.endsWith('%') ? Math.round(parseFloat(v)/100*255) : Math.round(parseFloat(v));\n  const r = clamp(conv(m[1] || '0'));\n  const g = clamp(conv(m[2] || '0'));\n  const b = clamp(conv(m[3] || '0'));\n  return '#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join('');\n}\n\n// parse hsl/hsla to hex\nfunction hslToHex(str) {\n  const m = /hsla?\\s*\\(\\s*([0-9.]+)(?:deg|°)?\\s*,\\s*([0-9.%]+)\\s*,\\s*([0-9.%]+)(?:\\s*,\\s*([0-9.]+))?\\s*\\)/i.exec(str);\n  if (!m) return null;\n  const h = (parseFloat(m[1]) % 360 + 360) % 360 / 360;\n  const s = (m[2].endsWith('%') ? parseFloat(m[2])/100 : parseFloat(m[2])) ;\n  const l = (m[3].endsWith('%') ? parseFloat(m[3])/100 : parseFloat(m[3])) ;\n  // hsl -> rgb\n  const hue2rgb = (p, q, t) => {\n    if (t < 0) t += 1;\n    if (t > 1) t -= 1;\n    if (t < 1/6) return p + (q - p) * 6 * t;\n    if (t < 1/2) return q;\n    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;\n    return p;\n  };\n  let r,g,b;\n  if (s === 0) {\n    r = g = b = l;\n  } else {\n    const q = l < 0.5 ? l * (1 + s) : (l + s - l * s);\n    const p = 2 * l - q;\n    r = hue2rgb(p, q, h + 1/3);\n    g = hue2rgb(p, q, h);\n    b = hue2rgb(p, q, h - 1/3);\n  }\n  const toHex = (v) => Math.round(v*255).toString(16).padStart(2,'0');\n  return '#'+toHex(r)+toHex(g)+toHex(b);\n}\n\n// normalize a raw color token to hex if possible\nfunction normalizeColorToken(token, cssVars) {\n  token = token.trim().toLowerCase();\n  // css variable var(--foo)\n  const varMatch = /^var\\(\\s*--([a-z0-9-_]+)\\s*(?:,\\s*(.+))?\\)$/i.exec(token);\n  if (varMatch) {\n    const name = '--' + varMatch[1];\n    const fallback = varMatch[2];\n    if (cssVars[name]) return normalizeColorToken(cssVars[name], cssVars);\n    if (fallback) return normalizeColorToken(fallback, cssVars);\n    return null;\n  }\n\n  // hex\n  const hexMatch = /^(#(?:[0-9a-f]{3}|[0-9a-f]{6}))(?:$|[^0-9a-f])/i.exec(token);\n  if (hexMatch) {\n    let h = hexMatch[1].toLowerCase();\n    if (h.length === 4) h = expandHex(h);\n    return h;\n  }\n  // rgb/rgba\n  if (/^rgba?\\(/i.test(token)) {\n    return rgbToHex(token);\n  }\n  // hsl/hsla\n  if (/^hsla?\\(/i.test(token)) {\n    return hslToHex(token);\n  }\n\n  // named colors: attempt small internal map for common names (extend as needed)\n  const named = {\n    'white':'#ffffff','black':'#000000','red':'#ff0000','blue':'#0000ff','green':'#008000',\n    'transparent': null // ignore\n  };\n  if (named[token] !== undefined) return named[token];\n\n  // not recognized\n  return null;\n}\n\n// --- gather CSS variables from <style> :root blocks ---\nconst cssVars = {};\nconst styleBlockRe = /<style[^>]*>([\\s\\S]*?)<\\/style>/gi;\nlet sb;\nwhile ((sb = styleBlockRe.exec(html))) {\n  const css = sb[1];\n  // :root { --brand: #123456; --foo: rgba(...) }\n  const rootRe = /:root\\s*\\{([\\s\\S]*?)\\}/gi;\n  let rr;\n  while ((rr = rootRe.exec(css))) {\n    const body = rr[1];\n    const varRe = /(--[a-z0-9-_]+)\\s*:\\s*([^;]+)\\s*;/gi;\n    let vm;\n    while ((vm = varRe.exec(body))) {\n      cssVars[vm[1].toLowerCase()] = vm[2].trim();\n    }\n  }\n  // Also capture any other --var declarations globally\n  const varRe2 = /(--[a-z0-9-_]+)\\s*:\\s*([^;]+)\\s*;/gi;\n  let v2;\n  while ((v2 = varRe2.exec(css))) {\n    cssVars[v2[1].toLowerCase()] = v2[2].trim();\n  }\n}\n\n// --- find colors in inline style attributes and style blocks ---\n// 1) inline style attributes\nconst inlineStyleRe = /<([a-z0-9-]+)\\b([^>]*)\\sstyle\\s*=\\s*(\"(?:[^\"]*)\"|'(?:[^']*)')/gi;\nlet is;\nwhile ((is = inlineStyleRe.exec(html))) {\n  const tag = is[1];\n  const attrs = is[2] + (is[3] || '');\n  const styleStrRaw = (is[3] || '').slice(1, -1); // remove quotes\n  // find color declarations inside style string\n  const declRe = /\\b(color|background-color|background|border-color|border|fill|stroke|box-shadow)\\s*:\\s*([^;!]+)(?:;|$)/gi;\n  let d;\n  while ((d = declRe.exec(styleStrRaw))) {\n    const prop = d[1];\n    const token = d[2].trim();\n    const normalized = normalizeColorToken(token, cssVars);\n    results.colorsFound.push({ raw: token, normalizedHex: normalized, where: `<${tag} ${attrs.slice(0,80)}...>` });\n  }\n  // also scan for --var declarations inline\n  const varDeclRe = /(--[a-z0-9-_]+)\\s*:\\s*([^;]+)\\s*;/gi;\n  let vd;\n  while ((vd = varDeclRe.exec(styleStrRaw))) {\n    cssVars[vd[1].toLowerCase()] = vd[2].trim();\n  }\n}\n\n// 2) style blocks: search property:value color tokens\nstyleBlockRe.lastIndex = 0;\nwhile ((sb = styleBlockRe.exec(html))) {\n  const css = sb[1];\n  const declRe = /(color|background-color|background|border-color|border|fill|stroke|box-shadow)\\s*:\\s*([^;}{]+)/gi;\n  let d;\n  while ((d = declRe.exec(css))) {\n    const prop = d[1];\n    const token = d[2].trim();\n    // css may have multiple values (e.g. background: url(...) no-repeat #fff;) - pick last color-like token\n    // split by whitespace and commas, pick parts that look like color tokens\n    const parts = token.split(/\\s+/).filter(Boolean);\n    let chosen = parts.find(p => /^(#|rgb|hsl|var\\(|[a-z]+)$/i.test(p)) || parts[parts.length-1];\n    const normalized = normalizeColorToken(chosen, cssVars);\n    results.colorsFound.push({ raw: chosen, normalizedHex: normalized, where: `style block (near: ${d.index})` });\n  }\n}\n\n// 3) svg inline fill/stroke attributes\nconst svgRe = /<svg[\\s\\S]*?>[\\s\\S]*?<\\/svg>/gi;\nlet sv;\nwhile ((sv = svgRe.exec(html))) {\n  const svgText = sv[0];\n  const attrRe = /\\b(fill|stroke)\\s*=\\s*(\"(?:[^\"]*)\"|'(?:[^']*)'|[^\\s>]+)/gi;\n  let a;\n  while ((a = attrRe.exec(svgText))) {\n    const token = (a[2] || a[1] || '').replace(/^[\"']|[\"']$/g,'').trim();\n    const normalized = normalizeColorToken(token, cssVars);\n    results.colorsFound.push({ raw: token, normalizedHex: normalized, where: 'inline <svg> attribute' });\n  }\n}\n\n// normalize results: unify by hex and record occurrences\nconst byHex = {};\nresults.colorsFound.forEach(c => {\n  const hex = c.normalizedHex || c.raw.toLowerCase();\n  if (!byHex[hex]) byHex[hex] = { normalizedHex: c.normalizedHex, rawSamples: new Set(), occurrences: [] };\n  byHex[hex].rawSamples.add(c.raw);\n  byHex[hex].occurrences.push({ where: c.where, raw: c.raw });\n});\n\n// build nonCompliant list\nObject.keys(byHex).forEach(k => {\n  const hex = byHex[k].normalizedHex;\n  const inPalette = hex && allowedPalette.includes(hex.toLowerCase());\n  const entry = {\n    id: k,\n    normalizedHex: hex || null,\n    rawExamples: Array.from(byHex[k].rawSamples).slice(0,5),\n    occurrences: byHex[k].occurrences\n  };\n  if (!inPalette) results.nonCompliant.push(entry);\n});\n\n// dedupe arrays for neatness\nresults.colorsFound = results.colorsFound; // keep raw list for traceability\n\nreturn [{ json: { colorCompliance: results } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        656
+      ],
+      "id": "9e838aae-666c-4635-b3c2-62ba76280df3",
+      "name": "Color Compliance Check"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Robust Attach Screenshots to Issues (best-effort matching + sensible fallbacks)\n\nconst out = [];\n\nfor (const item of items) {\n  const playResp = item.json || {};\n  const screenshots = Array.isArray(playResp.screenshots) ? playResp.screenshots : [];\n\n  // Build a map of screenshot id -> screenshot object (string keys)\n  const shotsById = {};\n  for (const s of screenshots) {\n    if (!s) continue;\n    const sid = String(s.id ?? '');\n    if (sid) shotsById[sid] = s;\n  }\n\n  // Helper to pick a fallback screenshot:\n  // 1) exact id match\n  // 2) screenshots[index] (same position)\n  // 3) shotsById['full-page']\n  // 4) first screenshot\n  const pickScreenshotFor = (id, index) => {\n    if (id && shotsById[String(id)]) return shotsById[String(id)];\n    if (Array.isArray(screenshots) && screenshots[index]) return screenshots[index];\n    if (shotsById['full-page']) return shotsById['full-page'];\n    if (screenshots.length > 0) return screenshots[0];\n    return null;\n  };\n\n  // Try to load original issues from other nodes if available\n  let originalIssues = null;\n  try {\n    if ($node && $node[\"Prepare Screenshot Actions\"] && $node[\"Prepare Screenshot Actions\"].json) {\n      // some nodes expose array or object\n      const p = $node[\"Prepare Screenshot Actions\"].json;\n      originalIssues = Array.isArray(p) ? (p[0] && p[0].issues ? p[0].issues : p) : (p.issues || null);\n    }\n  } catch (e) {}\n  try {\n    if ((!originalIssues || originalIssues.length === 0) && $node && $node[\"Build Report\"] && $node[\"Build Report\"].json) {\n      const b = $node[\"Build Report\"].json;\n      originalIssues = Array.isArray(b) ? (b[0] && b[0].issues ? b[0].issues : b) : (b.issues || null);\n    }\n  } catch (e) {}\n\n  // Fallbacks to playResp.actions or playResp.issues\n  if ((!originalIssues || originalIssues.length === 0) && Array.isArray(playResp.actions) && playResp.actions.length) {\n    originalIssues = playResp.actions.map(a => ({ id: a.id, note: a.note, ...a }));\n  }\n  if ((!originalIssues || originalIssues.length === 0) && Array.isArray(playResp.issues)) {\n    originalIssues = playResp.issues;\n  }\n\n  originalIssues = originalIssues || [];\n\n  const enriched = originalIssues.map((it, idx) => {\n    const id = (it && (it.id ?? it.actionId)) ? String(it.id ?? it.actionId) : `issue-${idx}`;\n    const match = pickScreenshotFor(id, idx);\n    const dataUri = match ? match.url : null;\n    // derive extension for filename\n    const extMatch = dataUri ? dataUri.match(/^data:image\\/([a-z0-9.+-]+)/i) : null;\n    let ext = 'png';\n    if (extMatch && extMatch[1]) {\n      ext = extMatch[1].replace('+','-');\n      if (ext === 'jpeg') ext = 'jpg';\n      if (ext === 'svg+xml') ext = 'svg';\n    }\n    const fileName = dataUri ? `${id}_${Date.now()}.${ext}` : null;\n\n    return {\n      ...it,\n      screenshotDataUri: dataUri,\n      screenshotFileName: fileName,\n      screenshotId: match ? (match.id ?? id) : null,\n      screenshotNote: match ? (match.note || '') : ''\n    };\n  });\n\n  out.push({ json: { url: playResp.url || null, issues: enriched, rawPlayResponse: playResp } });\n}\n\nreturn out;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1216,
+        496
+      ],
+      "id": "d0f040c2-7df9-4616-a5f8-1eb64fa9aa4d",
+      "name": "Attach Screenshots to Issues"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare Screenshot Actions (filter speed-test & build selectors, element-only by default)\n\nconst report = items[0].json || {}; // incoming Build Report item\nconst url = report.url || report.inputUrl || report.payload?.url || $json?.url || null;\nconst rawIssues = Array.isArray(report.issues) ? report.issues : [];\n\n// CONFIG: edit as needed\nconst BLOCKLIST = [\n  'speedtest','speed test','pagespeed','lighthouse','webpagetest','gtmetrix',\n  'performance','perf','page speed','yslow','psi','core web vitals','speedtest.net','pingdom'\n];\nconst ALLOW_FULL_PAGE_FALLBACK = false; // set to true if you still want full-page when selector cannot be found\nconst TEXT_SNIPPET_MIN = 6;    // min chars for text-based xpath selector\nconst TEXT_SNIPPET_MAX = 200;  // max chars to use\n\nfunction containsBlockedKeyword(str) {\n  if (!str || typeof str !== 'string') return false;\n  const s = str.toLowerCase();\n  return BLOCKLIST.some(k => s.includes(k));\n}\nfunction isSpeedTestIssue(issue) {\n  if (!issue || typeof issue !== 'object') return false;\n  const fields = [\n    issue.source, issue.tool, issue.rule, issue.ruleId, issue.issue, issue.message,\n    issue.section, issue.value, issue.valueDetail, issue.provider, issue.category,\n    issue.type, issue.id, JSON.stringify(issue)\n  ].filter(Boolean);\n  return fields.some(f => containsBlockedKeyword(String(f)));\n}\n\n// helper to build selectors\nfunction cssEscape(val) {\n  if (val == null) return '';\n  // simple escape for quotes; keep it safe for attribute selector\n  return String(val).replace(/\"/g, '\\\\\"');\n}\nfunction makeImgSelectorFromUrl(url) {\n  const esc = cssEscape(url);\n  return `img[src=\"${esc}\"], [data-src=\"${esc}\"], picture img[src=\"${esc}\"]`;\n}\nfunction makeLinkSelectorFromUrl(url) {\n  const esc = cssEscape(url);\n  return `a[href=\"${esc}\"], a[href*=\"${esc}\"], img[src=\"${esc}\"], [src=\"${esc}\"]`;\n}\nfunction makeXPathContainsText(snippet) {\n  const s = snippet.replace(/\"/g, '\\\\\"').replace(/\\s+/g, ' ').trim();\n  // xpath=//*[contains(normalize-space(.),\"snippet\")]\n  return `xpath=//*[contains(normalize-space(.), \"${s}\")]`;\n}\nfunction guessSelectorFromIssue(issue) {\n  // 1) use explicit selector if provided\n  if (issue.selector) return String(issue.selector);\n\n  const v = (issue.value || '').toString().trim();\n\n  // 2) if value looks like an image URL\n  if (v.match(/^https?:\\/\\/.*\\.(png|jpg|jpeg|gif|webp|svg)(\\?.*)?$/i)) {\n    return makeImgSelectorFromUrl(v);\n  }\n\n  // 3) if value looks like a URL (link/resource)\n  if (v.match(/^https?:\\/\\/.+/i)) {\n    return makeLinkSelectorFromUrl(v);\n  }\n\n  // 4) if value looks like a short textual snippet, use xpath contains\n  if (v.length >= TEXT_SNIPPET_MIN && v.length <= TEXT_SNIPPET_MAX) {\n    // take first 120 chars to avoid huge xpaths\n    const snippet = v.substring(0, 120);\n    return makeXPathContainsText(snippet);\n  }\n\n  // 5) try classname / id heuristics\n  if (issue.classname) {\n    const cls = issue.classname.split(/\\s+/).filter(Boolean)[0];\n    if (cls) return `.${cls}`;\n  }\n  if (issue.idval || issue.domId) {\n    const idv = issue.idval || issue.domId;\n    return `#${String(idv).replace(/^\\#/, '')}`;\n  }\n\n  // nothing found\n  return null;\n}\n\n// Filter out speed-test issues\nconst filtered = rawIssues.filter(i => !isSpeedTestIssue(i));\n\n// Build actions array — only include actions that have a selector OR allow full-page fallback\nconst actions = [];\nconst keptIssues = []; // issues we include (with selector attached if found)\n\nfor (let idx = 0; idx < filtered.length; idx++) {\n  const iss = filtered[idx];\n  const id = iss.id || `issue-${idx}`;\n  const note = iss.issue || iss.message || iss.rule || iss.description || '';\n\n  const selector = guessSelectorFromIssue(iss);\n  if (selector) {\n    // build action using selector\n    actions.push({ id, selector, note });\n    keptIssues.push({ ...iss, id, selector });\n  } else if (ALLOW_FULL_PAGE_FALLBACK) {\n    // include full-page action only if allowed\n    actions.push({ id, note }); // no selector -> server will full-page\n    keptIssues.push({ ...iss, id });\n  } else {\n    // skip this issue (no selector found and full-page fallback disabled)\n    // optionally you can push it to a separate \"skipped\" array for auditing\n    // keptIssues not updated\n  }\n}\n\n// Return object\nreturn [{\n  json: {\n    url,\n    actions,\n    issues: keptIssues,\n    issuesCount: keptIssues.length,\n    totals: report.totals || {},\n    scannedAt: report.scannedAt || new Date().toISOString()\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        736,
+        496
+      ],
+      "id": "66d136be-d6d8-440e-b740-eb067eb39173",
+      "name": "Prepare Screenshot Actions"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "NGROK_URL_REDACTED",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}\n",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        960,
+        480
+      ],
+      "id": "08ee9e42-9bff-488d-9aa4-2084d58d87b7",
+      "name": "Capture Screenshots (HTTP Request)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare Binary - converts each issue.screenshotDataUri -> one output item with binary.data\n\nconst outputs = [];\n\nfor (const item of items) {\n  const issues = item.json.issues || [];\n  if (!Array.isArray(issues)) continue;\n\n  for (const it of issues) {\n    if (!it || !it.screenshotDataUri) continue;\n\n    const m = it.screenshotDataUri.match(/^data:([^;]+);base64,(.*)$/);\n    if (!m) continue;\n\n    const mime = m[1]; // e.g. image/png\n    const b64  = m[2];\n    const buffer = Buffer.from(b64, 'base64');\n\n    // derive extension\n    let ext = 'png';\n    const extMatch = mime.match(/image\\/([a-z0-9.+-]+)/i);\n    if (extMatch && extMatch[1]) {\n      ext = extMatch[1].replace('+','-');\n      if (ext === 'jpeg') ext = 'jpg';\n      if (ext === 'svg+xml') ext = 'svg';\n    }\n\n    const filename = it.screenshotFileName || `${String(it.screenshotId || it.id || 'screenshot')}_${Date.now()}.${ext}`;\n\n    const binaryData = await this.helpers.prepareBinaryData(buffer, filename);\n\n    outputs.push({\n      json: {\n        id: it.screenshotId ?? it.id ?? null,\n        fileName: filename,\n        originalIssue: it\n      },\n      binary: {\n        data: binaryData\n      }\n    });\n  }\n}\n\nif (outputs.length === 0) {\n  return [{ json: { ok: false, message: 'no screenshots to save' } }];\n}\n\nreturn outputs;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1488,
+        480
+      ],
+      "id": "8abd1aef-1511-4bb8-9bd5-110ddc9ccd8b",
+      "name": "Prepare Binary"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "https://docs.google.com/spreadsheets/d/GOOGLE_SHEET_ID_REDACTED/edit?gid=0#gid=0",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ $json.scannedAt }}",
+            "URL": "={{ $json.url }}",
+            "Total Issues": "== {{$node[\"Compare with previous\"].json[\"summary\"]?.curTotal ?? $node[\"Compare with previous\"].json[\"summary\"]?.curTotal}}",
+            "Image Issues": "== {{$node[\"Compare with previous\"].json[\"annotatedIssues\"]?.filter(i => (i.section||'').toString().toLowerCase().includes('image')).length || 0}}",
+            "Heading Issues": "== {{$node[\"Compare with previous\"].json[\"annotatedIssues\"]?.filter(i => (i.section||'').toString().toLowerCase().includes('head')).length || 0}}",
+            "Fonts Issues": "={{$node[\"Compare with previous\"].json.annotatedIssues \n  ? $node[\"Compare with previous\"].json.annotatedIssues.filter(function(i){ return (String(i.section||'') + String(i.issue||'')).toLowerCase().includes('font'); }).length \n  : ''}}\n",
+            "Spacing Issues": "={{$node[\"Compare with previous\"].json.annotatedIssues \n  ? $node[\"Compare with previous\"].json.annotatedIssues.filter(function(i){ return /spacing|margin|padding/i.test(String(i.section||'') + String(i.issue||'')); }).length \n  : ''}}\n",
+            "Bullets Issues": "={{$node[\"Compare with previous\"].json.annotatedIssues \n  ? $node[\"Compare with previous\"].json.annotatedIssues.filter(function(i){ return /bullet/i.test(String(i.section||'') + String(i.issue||'')); }).length \n  : ''}}\n",
+            "Link Issues": "={{$node[\"Compare with previous\"].json.annotatedIssues \n  ? $node[\"Compare with previous\"].json.annotatedIssues.filter(function(i){ return (String(i.section||'') + String(i.issue||'')).toLowerCase().includes('link'); }).length \n  : ''}}\n",
+            "JSON Report": "={{$node[\"Compare with previous\"].json.reportForSheet ? JSON.stringify($node[\"Compare with previous\"].json.reportForSheet) : JSON.stringify($node[\"Compare with previous\"].json.annotatedIssues || [])}}\n",
+            "Color Issues": "={{$node[\"Compare with previous\"].json.summary && $node[\"Compare with previous\"].json.summary.curColorIssues ? $node[\"Compare with previous\"].json.summary.curColorIssues : ''}}\n",
+            "Performance Score": "={{ $json.annotatedIssues[1].value }}",
+            "Perf Delta": "={{ $json.summary.perfDelta }}",
+            "Prev Timestamp": "={{ $json.summary.prevScannedAt }}",
+            "Delta Total": "={{ $json.summary.curTotal }}",
+            "New Issues Count": "={{$node[\"Compare with previous\"].json.summary && $node[\"Compare with previous\"].json.summary.newCount ? $node[\"Compare with previous\"].json.summary.newCount : ''}}\n",
+            "Resolved Issues Count": "={{$node[\"Compare with previous\"].json.summary && $node[\"Compare with previous\"].json.summary.resolvedCount ? $node[\"Compare with previous\"].json.summary.resolvedCount : ''}}\n"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "CREDENTIAL_ID_REDACTED",
+              "displayName": "Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "URL",
+              "displayName": "URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Total Issues",
+              "displayName": "Total Issues",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Heading Issues",
+              "displayName": "Heading Issues",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Image Issues",
+              "displayName": "Image Issues",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "JSON Report",
+              "displayName": "JSON Report",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Fonts Issues",
+              "displayName": "Fonts Issues",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Spacing Issues",
+              "displayName": "Spacing Issues",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Bullets Issues",
+              "displayName": "Bullets Issues",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Link Issues",
+              "displayName": "Link Issues",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Color Issues",
+              "displayName": "Color Issues",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Performance Score",
+              "displayName": "Performance Score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Prev Timestamp",
+              "displayName": "Prev Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "New Issues Count",
+              "displayName": "New Issues Count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Resolved Issues Count",
+              "displayName": "Resolved Issues Count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Delta Total",
+              "displayName": "Delta Total",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Perf Delta",
+              "displayName": "Perf Delta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1168,
+        144
+      ],
+      "id": "49417586-a265-4419-b61d-cbdcaedd15c7",
+      "name": "Append row in sheet1",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "CREDENTIAL_ID_REDACTED",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Robust Code node: Build Email Body (no attachment)\nconst getNodeSafe = (name) => {\n  try { return $node?.[name]; } catch { return undefined; }\n};\n\nconst buildReportNode = getNodeSafe(\"Build Report\");\nconst appendNode = getNodeSafe(\"Append row in sheet1\");\n\n// Try several places for the sheet URL/ID\nlet sheetUrl = \"https://docs.google.com/spreadsheets/d/GOOGLE_SHEET_ID_REDACTED/edit?gid=0\"; // fallback\n\n// 1) Common parameter names used by different node versions\nif (appendNode?.parameters) {\n  // parameters might be an object or contain nested value objects\n  sheetUrl = appendNode.parameters.documentId?.value\n          || appendNode.parameters.spreadsheetId?.value\n          || appendNode.parameters.spreadsheetId\n          || appendNode.parameters.spreadsheetUrl\n          || sheetUrl;\n}\n\n// 2) Check node json output for spreadsheetUrl or url-like fields\nif (appendNode?.json) {\n  sheetUrl = appendNode.json.spreadsheetUrl\n          || appendNode.json.spreadsheet_id\n          || appendNode.json.spreadsheetId\n          || appendNode.json.sheetUrl\n          || sheetUrl;\n}\n\n// 3) If Build Report has a link to sheet, prefer that\nconst report = buildReportNode?.json || $input.item?.json || {};\nif (report.sheetUrl || report.sheet_url) sheetUrl = report.sheetUrl || report.sheet_url;\n\n// Build subject/body safely\nconst subject = `Landing QA report — ${report.url || \"unknown URL\"} — ${report.scannedAt || new Date().toISOString()}`;\nconst shortSummary = `Total issues: ${report.totals?.issues ?? (report.issues ? report.issues.length : \"0\")}`;\n\nconst html = `\n  <p><strong>URL:</strong> <a href=\"${report.url || ''}\">${report.url || '—'}</a></p>\n  <p><strong>Scanned at:</strong> ${report.scannedAt || ''}</p>\n  <p><strong>${shortSummary}</strong></p>\n  <p>Google Sheet: <a href=\"${sheetUrl}\">${sheetUrl}</a></p>\n  <hr/>\n  <p><em>Quick issues preview (first 6):</em></p>\n  <pre>${JSON.stringify((report.issues || []).slice(0,6), null, 2)}</pre>\n`;\n\nreturn [{ json: { subject, html } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1424,
+        144
+      ],
+      "id": "572dd4f3-55d3-47ce-88a3-e5e5a7609514",
+      "name": "Build Email Body"
+    },
+    {
+      "parameters": {
+        "fromEmail": "email_redacted@example.com",
+        "toEmail": "={{ $node[\"Append row in sheet1\"].json[\"ManagerEmail\"] || \"email_redacted@example.com\" }}",
+        "subject": "=={{ $node[\"Build Email Body\"].json[\"subject\"] }}",
+        "html": "={{ $json.html }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1680,
+        128
+      ],
+      "id": "95f0af2b-196a-441e-961f-d4e658a33f23",
+      "name": "Send email",
+      "webhookId": "c2c7387c-e240-41ce-b205-f3be01de222c",
+      "credentials": {
+        "smtp": {
+          "id": "CREDENTIAL_ID_REDACTED",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url={{ $('Validate URL').item.json.url }}&strategy=mobile&category=performance&category=accessibility&key=PAGESPEED_API_KEY_REDACTED",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        -128,
+        1200
+      ],
+      "id": "cd7ea8ce-18a5-4771-81c1-51930e29daf6",
+      "name": "Speed Test (PageSpeed API)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Speed Test (robust): handles numeric audits + audits with details.items (like accessibility)\n// Input: $input.item.json => the raw PageSpeed / Lighthouse API response\n\nconst resp = $input.item.json || {};\nconst lr = resp.lighthouseResult || {};\nconst audits = lr.audits || {};\nconst issues = [];\n\n// helper to add issue\nfunction pushIssue(section, issue, value = \"\", severity = \"medium\", details = {}) {\n  issues.push({ section, issue, value, severity, details });\n}\n\n// 1) Performance summary (score may be null)\nif (lr.categories && lr.categories.performance) {\n  const p = lr.categories.performance;\n  const perfScore = (typeof p.score === 'number') ? Math.round(p.score * 100) : null;\n  if (perfScore !== null) {\n    if (perfScore < 50) pushIssue('Performance', 'Performance score very low', perfScore, 'critical', { score: perfScore });\n    else if (perfScore < 90) pushIssue('Performance', 'Performance score below 90', perfScore, 'high', { score: perfScore });\n    else pushIssue('Performance', 'Performance score', perfScore, 'low', { score: perfScore });\n  } else {\n    // score null -> still include a safe summary entry\n    pushIssue('Performance', 'Performance score not available', 'N/A', 'low', { score: null });\n  }\n}\n\n// 2) Common numeric audits (FCP, LCP, CLS, TBT, TTFB)\nconst numericChecks = [\n  { key: 'first-contentful-paint', name: 'First Contentful Paint', thresholdMs: 2000 },\n  { key: 'largest-contentful-paint', name: 'Largest Contentful Paint', thresholdMs: 2500 },\n  { key: 'total-blocking-time', name: 'Total Blocking Time', thresholdMs: 300 },\n  { key: 'server-response-time', name: 'Server response time (TTFB)', thresholdMs: 600 },\n  { key: 'cumulative-layout-shift', name: 'Cumulative Layout Shift', thresholdVal: 0.1 }\n];\n\nconst numericValueOf = (audit) => {\n  if (!audit) return null;\n  if (typeof audit.numericValue === 'number') return audit.numericValue;\n  // Some audits provide numericValue in details or displayValue; try displayValue parse\n  if (typeof audit.displayValue === 'string') {\n    const m = audit.displayValue.match(/[\\d,.]+/);\n    if (m) return Number(m[0].replace(',', ''));\n  }\n  return null;\n};\n\nnumericChecks.forEach(check => {\n  const a = audits[check.key];\n  const val = numericValueOf(a);\n  if (val !== null) {\n    // special handling for CLS which is not ms\n    if (check.key === 'cumulative-layout-shift') {\n      if (val > (check.thresholdVal ?? 0.1)) pushIssue('Performance', `${check.name} high`, val, 'medium', { auditId: check.key });\n      else pushIssue('Performance', check.name, val, 'low', { auditId: check.key });\n    } else {\n      if (val > (check.thresholdMs ?? Number.POSITIVE_INFINITY)) pushIssue('Performance', `${check.name} slow`, `${Math.round(val)} ms`, 'medium', { auditId: check.key });\n      else pushIssue('Performance', check.name, `${Math.round(val)} ms`, 'low', { auditId: check.key });\n    }\n  }\n});\n\n// 3) Accessibility & audits with details.items (like your aria-text example)\n// For audits with details && details.items (array), create issues summarizing the instances.\n// We add them under section 'Accessibility' if the audit seems accessibility-related, otherwise under 'Other'.\nfor (const [auditId, auditObj] of Object.entries(audits)) {\n  if (!auditObj) continue;\n  const sd = auditObj.scoreDisplayMode;\n  const score = auditObj.score;\n\n  // If audit has details with items, list them\n  const det = auditObj.details;\n  if (det && Array.isArray(det.items) && det.items.length > 0) {\n    // try to pick a friendly title from auditObj.title or fallback to id\n    const title = auditObj.title || auditObj.description || auditId;\n    const description = auditObj.description || '';\n\n    // Build a readable value from items (limit to first N to avoid very long emails)\n    const MAX_ITEMS_IN_EMAIL = 20;\n    const items = det.items.slice(0, MAX_ITEMS_IN_EMAIL).map(it => {\n      // common helpful fields: aria-text, id, node snippet, failureSummary\n      return (\n        it['aria-text'] ||\n        it['ariaText'] ||\n        it.id ||\n        it.node ||\n        it.failureSummary ||\n        JSON.stringify(it)\n      );\n    });\n\n    const value = items.join(', ');\n\n    // Determine severity: if score === 0 or score === null+notApplicable => medium, otherwise low\n    let sev = 'medium';\n    if (typeof score === 'number' && score >= 0.9) sev = 'low';\n    if (sd === 'notApplicable') sev = 'low';\n\n    // Put accessibility-like findings in Accessibility section if id/title indicates\n    const lowerId = auditId.toLowerCase();\n    const section = (lowerId.includes('aria') || lowerId.includes('accessibility') || lowerId.includes('contrast') || lowerId.includes('aria-text')) ? 'Accessibility' : 'Other';\n\n    pushIssue(section, title, value, sev, { auditId, score, scoreDisplayMode: sd, description });\n  } else {\n    // No items — if audit has a numeric score but no numericValue, we can still add a summary issue if failing\n    if ((typeof auditObj.score === 'number' && auditObj.score < 0.5) || (typeof auditObj.score === 'number' && auditObj.score <= 0)) {\n      pushIssue('Other', auditObj.title || auditId, auditObj.displayValue || auditObj.description || '', 'medium', { auditId, score: auditObj.score });\n    }\n  }\n}\n\n// 4) Keep raw data for debugging/inspection downstream\nreturn [{ json: {\n  speedTestRaw: resp,\n  speedTestSummary: {\n    performanceScore: (lr.categories && lr.categories.performance && typeof lr.categories.performance.score === 'number') ? Math.round(lr.categories.performance.score * 100) : null,\n    emulatedFormFactor: resp.emulatedFormFactor || resp.formFactor || (lr.configSettings && lr.configSettings.emulatedFormFactor) || null\n  },\n  speedIssues: issues,   // convenience field\n  issues                 // shape used by Build Report: an array of {section, issue, value, severity, details}\n}}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        80,
+        1200
+      ],
+      "id": "ce822747-bd65-4d71-82aa-e4e36ec4a80f",
+      "name": "Parse Speed Test"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Compare with previous - final version with trimming for sheet\n// Mode: Run Once for All Items\n// Inputs expected:\n// - $node[\"Build Report\"].json  (current run)\n// - $node[\"Get previous run\"].json  (array of previous sheet rows)\n\nconst cur = $node[\"Build Report\"]?.json || {};\nconst prevRowsRaw = $node[\"Get previous run\"]?.json || [];\n\n// ---------- Helper utilities ----------\nfunction normalizeUrl(u) {\n  if (!u) return '';\n  try {\n    let s = String(u).trim().toLowerCase();\n    s = s.replace(/^https?:\\/\\//, '').replace(/^www\\./, '');\n    s = s.replace(/\\/+$/, '');\n    return s;\n  } catch (e) { return String(u || '').toLowerCase(); }\n}\n\nfunction parseTS(ts) {\n  if (!ts) return null;\n  const s = String(ts).trim();\n  if (s === '' || s.startsWith('#ERROR') || s.toUpperCase() === 'ERROR') return null;\n  const isoRegex = /\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z?/;\n  const m = s.match(isoRegex);\n  const candidate = m ? m[0] : s;\n  const d = new Date(candidate);\n  if (!isNaN(d.getTime())) return d.getTime();\n  const n = Date.parse(candidate);\n  return isNaN(n) ? null : n;\n}\n\nfunction parseNumberLike(v) {\n  if (v === undefined || v === null || v === '') return null;\n  if (typeof v === 'number') return v;\n  const s = String(v).trim();\n  if (s === '' || s.startsWith('#ERROR') || s.toUpperCase() === 'ERROR') return null;\n  const cleaned = s.replace(/,/g, '').replace(/[^\\d\\.\\-]/g, '');\n  const n = Number(cleaned);\n  return Number.isFinite(n) ? n : null;\n}\n\nfunction stripLeadingFormulaPrefix(s) {\n  if (!s || typeof s !== 'string') return s;\n  const trimmed = s.trim();\n  const idx = trimmed.indexOf('[');\n  if (trimmed.startsWith('=') && idx !== -1) {\n    return trimmed.slice(idx);\n  }\n  if (trimmed.startsWith('=')) return trimmed.slice(1);\n  return trimmed;\n}\n\nfunction truncateString(s, max=200) {\n  if (s === undefined || s === null) return '';\n  const str = typeof s === 'string' ? s : JSON.stringify(s);\n  if (str.length <= max) return str;\n  return str.slice(0, max) + '…';\n}\n\n// ---------- Normalize current URL ----------\nconst curUrl = normalizeUrl(cur.url || cur.URL || cur.page || cur.Page || '');\n\n// ---------- Normalize previous rows ----------\nlet prevRows = [];\nif (Array.isArray(prevRowsRaw)) prevRows = prevRowsRaw;\nelse if (prevRowsRaw && typeof prevRowsRaw === 'object') prevRows = [prevRowsRaw];\n\n// ---------- Match previous rows by URL ----------\nlet matched = [];\nif (Array.isArray(prevRows)) {\n  matched = prevRows.filter(r => {\n    const raw = (r.URL || r.url || r[\"Url\"] || r[\"Page\"] || r.page || r[\"URL \"] || '');\n    const rowUrl = normalizeUrl(raw);\n    if (!rowUrl || !curUrl) return false;\n    if (rowUrl === curUrl) return true;\n    const rowNoProto = rowUrl.replace(/^https?:\\/\\//,'').replace(/^www\\./,'');\n    const curNoProto = curUrl.replace(/^https?:\\/\\//,'').replace(/^www\\./,'');\n    return rowNoProto === curNoProto || rowNoProto.includes(curNoProto) || curNoProto.includes(rowNoProto);\n  });\n}\n\n// ---------- Pick the latest matched row (by timestamp) ----------\nlet prevRow = null;\nif (matched.length === 1) prevRow = matched[0];\nelse if (matched.length > 1) {\n  matched.sort((a,b) => {\n    const ta = parseTS(a.Timestamp || a.timestamp || a.scannedAt || a[\"Prev Timestamp\"] || a[\"PrevTimestamp\"] || a[\"Timestamp \"]);\n    const tb = parseTS(b.Timestamp || b.timestamp || b.scannedAt || b[\"Prev Timestamp\"] || b[\"PrevTimestamp\"] || b[\"Timestamp \"]);\n    if (ta === null && tb === null) return 0;\n    if (ta === null) return 1;\n    if (tb === null) return -1;\n    return tb - ta;\n  });\n  prevRow = matched[0];\n}\n\n// ---------- Parse previous issues robustly ----------\nlet prevIssues = [];\nif (prevRow) {\n  const candidates = [\n    prevRow[\"JSON Report\"], prevRow[\"JSONReport\"], prevRow.json_report, prevRow[\"json report\"],\n    prevRow.issues, prevRow.JSONReport, prevRow[\"JSON Report \"], prevRow[\"JSON_Report\"]\n  ];\n  for (const c of candidates) {\n    if (!c) continue;\n    if (Array.isArray(c)) { prevIssues = c; break; }\n    if (typeof c === 'object' && c !== null) {\n      if (Array.isArray(c.issues)) { prevIssues = c.issues; break; }\n      if (Array.isArray(c)) { prevIssues = c; break; }\n    }\n    if (typeof c === 'string') {\n      let trimmed = c.trim();\n      if (trimmed === '' || trimmed.startsWith('#ERROR') || trimmed.toUpperCase() === 'ERROR') continue;\n      trimmed = stripLeadingFormulaPrefix(trimmed);\n      try {\n        const parsed = JSON.parse(trimmed);\n        if (Array.isArray(parsed)) { prevIssues = parsed; break; }\n        if (parsed && Array.isArray(parsed.issues)) { prevIssues = parsed.issues; break; }\n      } catch (e) {\n        const idx = trimmed.indexOf('[');\n        if (idx !== -1) {\n          const possible = trimmed.slice(idx);\n          try {\n            const parsed2 = JSON.parse(possible);\n            if (Array.isArray(parsed2)) { prevIssues = parsed2; break; }\n          } catch (_) {}\n        }\n        const lines = trimmed.split('\\n').map(s=>s.trim()).filter(Boolean);\n        if (lines.length > 0) {\n          prevIssues = lines.map((m,i) => ({ id: `prev-fallback-${i}`, issue: m }));\n          break;\n        }\n      }\n    }\n  }\n}\n\n// ---------- Current issues ----------\nconst curIssues = Array.isArray(cur.issues) ? cur.issues : (cur.issues ? [cur.issues] : []);\n\n// ---------- Stable key helper ----------\nfunction issueKey(issue) {\n  if (!issue) return '';\n  if (issue.id) return String(issue.id);\n  const section = issue.section || issue.category || issue.type || issue.group || 'unknown';\n  const issueText = (issue.issue || issue.message || issue.title || '').toString().replace(/\\s+/g,' ').trim().slice(0,120);\n  const val = (issue.value || issue.selector || issue.context || '').toString().slice(0,80);\n  return `${section}::${issueText}::${val}`;\n}\n\n// ---------- Build maps and compare ----------\nconst prevMap = {};\nprevIssues.forEach(i => { try { prevMap[issueKey(i)] = i; } catch(e){} });\nconst curMap = {};\ncurIssues.forEach(i => { try { curMap[issueKey(i)] = i; } catch(e){} });\n\nconst newIssues = [], resolvedIssues = [], unchanged = [];\nfor (const k of Object.keys(curMap)) {\n  if (!prevMap[k]) newIssues.push(curMap[k]); else unchanged.push(curMap[k]);\n}\nfor (const k of Object.keys(prevMap)) if (!curMap[k]) resolvedIssues.push(prevMap[k]);\n\n// ---------- Totals ----------\nconst curTotal = (cur.totals && typeof cur.totals.issues === 'number') ? cur.totals.issues\n                : (Number.isFinite(parseNumberLike(cur[\"Total Issues\"])) ? parseNumberLike(cur[\"Total Issues\"]) \n                : (Array.isArray(curIssues) ? curIssues.length : 0));\n\nlet prevTotal = null;\nif (prevRow) {\n  const candidates = [prevRow[\"Total Issues\"], prevRow.totalIssues, prevRow.total_issues, prevRow[\"TotalIssues\"], prevRow[\"Total Issues \"]];\n  for (const c of candidates) {\n    const n = parseNumberLike(c);\n    if (Number.isFinite(n)) { prevTotal = n; break; }\n  }\n}\nif (prevTotal === null) prevTotal = Array.isArray(prevIssues) ? prevIssues.length : 0;\nconst deltaTotal = curTotal - prevTotal;\n\n// ---------- Performance ----------\nconst curPerf = (cur.speedTestSummary && typeof cur.speedTestSummary.performanceScore === 'number') ? cur.speedTestSummary.performanceScore\n                 : (Number.isFinite(parseNumberLike(cur[\"Performance Score\"])) ? parseNumberLike(cur[\"Performance Score\"]) : null);\n\nlet prevPerf = null;\nif (prevRow) {\n  const perfCandidates = [\n    prevRow[\"Performance Score\"], prevRow.performanceScore, prevRow.perfScore, prevRow[\"perf score\"],\n    prevRow[\"Perf Score\"], prevRow[\"PerformanceScore\"], prevRow[\"Performance Score \"], prevRow[\"Speed Score\"]\n  ];\n  for (const p of perfCandidates) {\n    const n = parseNumberLike(p);\n    if (Number.isFinite(n)) { prevPerf = n; break; }\n  }\n}\nconst perfDelta = (curPerf !== null && prevPerf !== null) ? (curPerf - prevPerf) : (curPerf !== null && prevPerf === null ? null : null);\n\n// ---------- Color issues ----------\nconst curColorIssues = (cur.totals && (typeof cur.totals.color === 'number' || typeof cur.totals.colors === 'number')) \n                        ? (cur.totals.color ?? cur.totals.colors)\n                        : (Number.isFinite(parseNumberLike(cur[\"Color Issues\"])) ? parseNumberLike(cur[\"Color Issues\"]) : null);\n\nlet prevColorIssues = null;\nif (prevRow) {\n  const colorCandidates = [prevRow[\"Color Issues\"], prevRow.colorIssues, prevRow.color_issues, prevRow[\"ColorIssues\"], prevRow[\"Color Issues \"]];\n  for (const c of colorCandidates) {\n    const n = parseNumberLike(c);\n    if (Number.isFinite(n)) { prevColorIssues = n; break; }\n  }\n}\n\n// ---------- prevScannedAt ----------\nlet prevScannedAt = null;\nif (prevRow) {\n  const tryNames = [\"Timestamp\",\"timestamp\",\"scannedAt\",\"Prev Timestamp\",\"PrevTimestamp\",\"Prev_ScannedAt\",\"Prev Scan\",\"PrevScan\",\"Time\",\"Date\",\"TimeStamp\",\"Timestamp \"];\n  for (const name of tryNames) {\n    if (prevRow[name]) {\n      const p = String(prevRow[name]).trim();\n      if (p !== '' && !p.startsWith('#ERROR')) { \n        const isoMatch = p.match(/\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z?/);\n        prevScannedAt = isoMatch ? isoMatch[0] : p;\n        break;\n      }\n    }\n  }\n  if (!prevScannedAt) {\n    const isoRegex = /\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z?/;\n    for (const k of Object.keys(prevRow)) {\n      try {\n        const v = prevRow[k];\n        if (!v) continue;\n        const s = String(v);\n        const m = s.match(isoRegex);\n        if (m && m[0]) { prevScannedAt = m[0]; break; }\n      } catch(e) { continue; }\n    }\n  }\n}\n\n// ---------- Annotate current issues ----------\nconst annotatedIssues = curIssues.map(i => {\n  const k = issueKey(i);\n  return { ...i, _compareStatus: prevMap[k] ? 'unchanged' : 'new' };\n});\n\n// ---------- Initial run option ----------\nconst initialRun = !prevRow;\nconst treatInitialAsBaseline = false; // set true to treat first run as baseline\nif (initialRun && treatInitialAsBaseline) {\n  newIssues.length = 0;\n}\n\n// ---------- Build summary ----------\nconst summary = {\n  prevScannedAt: prevScannedAt || null,\n  prevTotal,\n  curTotal,\n  deltaTotal: (initialRun && treatInitialAsBaseline) ? null : deltaTotal,\n  newCount: (initialRun && treatInitialAsBaseline) ? 0 : newIssues.length,\n  resolvedCount: resolvedIssues.length,\n  unchangedCount: unchanged.length,\n  curPerf: curPerf ?? null,\n  prevPerf: prevPerf ?? null,\n  perfDelta: perfDelta ?? null,\n  curColorIssues: curColorIssues ?? null,\n  prevColorIssues: prevColorIssues ?? null,\n  initialRun: !!initialRun\n};\n\n// ---------- TRIMMING BLOCK: build reportForSheet and fullReport ----------\n/* Goals:\n   - reportForSheet: compact array of issue fingerprints and small fields (safe for sheet cell)\n   - fullReport: cleaned annotatedIssues (remove giant `details`, truncate very large `value` fields)\n*/\nconst MAX_ISSUES_IN_SHEET = 30;\nconst MAX_CELL_CHARS = 45000; // safe margin under sheet limit\n\nfunction minimalIssue(i) {\n  return {\n    id: i.id || null,\n    section: i.section || i.category || null,\n    issue: truncateString(i.issue || i.message || '', 160),\n    value: truncateString(i.value ?? i.selector ?? '', 160),\n    severity: i.severity ?? null,\n    _compareStatus: i._compareStatus ?? null\n  };\n}\n\n// build minimal list\nlet minimalList = annotatedIssues.map(minimalIssue);\n\n// ensure we don't exceed MAX_ISSUES_IN_SHEET by trimming\nif (minimalList.length > MAX_ISSUES_IN_SHEET) minimalList = minimalList.slice(0, MAX_ISSUES_IN_SHEET);\n\n// compute serialized size and reduce if needed\nlet reportForSheet = minimalList;\nlet reportString = JSON.stringify(reportForSheet);\nif (reportString.length > MAX_CELL_CHARS) {\n  // try a smaller set and more aggressive truncation\n  reportForSheet = minimalList.slice(0, Math.max(5, Math.floor(MAX_ISSUES_IN_SHEET/2))).map(i => ({\n    id: i.id,\n    section: i.section,\n    issue: truncateString(i.issue, 80),\n    _compareStatus: i._compareStatus\n  }));\n  reportString = JSON.stringify(reportForSheet);\n  // if still large, further reduce to count-only\n  if (reportString.length > MAX_CELL_CHARS) {\n    reportForSheet = [{ summary: `reportTooLarge: originalIssues=${minimalList.length}` }];\n    reportString = JSON.stringify(reportForSheet);\n  }\n}\n\n// build a cleaned fullReport (drop huge details)\nconst fullReport = annotatedIssues.map(i => {\n  const copy = { ...i };\n  if (copy.details) delete copy.details; // remove details blob\n  if (copy.value && String(copy.value).length > 1000) copy.value = String(copy.value).slice(0, 800) + '…';\n  // keep other fields as-is\n  return copy;\n});\n\n// report meta\nconst reportMeta = {\n  fullSize: JSON.stringify(annotatedIssues).length,\n  reportForSheetLength: reportString.length,\n  issuesCount: annotatedIssues.length\n};\n\n// ---------- Return single item (include reportForSheet & fullReport) ----------\nreturn [{ json: {\n  url: cur.url || cur.URL || cur.page || '',\n  scannedAt: cur.scannedAt || new Date().toISOString(),\n  summary,\n  annotatedIssues,\n  newIssues,\n  resolvedIssues,\n  previousRow: prevRow || {},\n  reportForSheet,\n  fullReport,\n  reportMeta\n}}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        128
+      ],
+      "id": "426b7886-44d5-471d-bbb0-dbd95c1f95f0",
+      "name": "Compare with previous"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "https://docs.google.com/spreadsheets/d/GOOGLE_SHEET_ID_REDACTED/edit?gid=0#gid=0",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "options": {
+          "outputFormatting": {
+            "values": {
+              "general": "UNFORMATTED_VALUE",
+              "date": "FORMATTED_STRING"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        672,
+        128
+      ],
+      "id": "e3a5b7c4-0815-480b-8759-c721e75bb27c",
+      "name": "Get previous run",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "CREDENTIAL_ID_REDACTED",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "Entrypoint: receives POST payload or ?url=; kicks off the landing-page QA run."
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1680,
+        464
+      ],
+      "typeVersion": 1,
+      "id": "bc177ac4-e1ee-4a8e-8a0e-e90b3ff0ebc2",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "Normalizes and basic-validates incoming URL; adds https:// if missing and errors on bad format.",
+        "width": 224
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1392,
+        448
+      ],
+      "typeVersion": 1,
+      "id": "21a13d20-658e-440e-8591-999b449fbbac",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "content": "Quick HEAD request to confirm the host responds (checks status code)."
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1136,
+        448
+      ],
+      "typeVersion": 1,
+      "id": "bc33b762-bf96-44fa-8719-e0291b723995",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "content": "Branch: continues only for 2xx–3xx responses; otherwise stops or handles failure"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -880,
+        480
+      ],
+      "typeVersion": 1,
+      "id": "47bbaef2-a3a4-464b-ad62-637ec7f3045f",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "content": "Immediately acknowledges webhook sender that request was accepted (non-blocking)."
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1488,
+        720
+      ],
+      "typeVersion": 1,
+      "id": "475d2896-1607-452a-8afc-5cd7e24bc09a",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "content": "Downloads raw HTML (used by static checks).",
+        "height": 192
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -656,
+        304
+      ],
+      "typeVersion": 1,
+      "id": "b56eb3bc-cdc2-472c-a781-6e05c06105a4",
+      "name": "Sticky Note5"
+    },
+    {
+      "parameters": {
+        "content": "Merge node: waits for all parallel static checks to finish before building report."
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        160,
+        288
+      ],
+      "typeVersion": 1,
+      "id": "600e9e1c-2e39-4c66-b599-9db91d37fea6",
+      "name": "Sticky Note6"
+    },
+    {
+      "parameters": {
+        "content": "Consolidates all checks into a single report object with totals, issues, and debug hints."
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        432,
+        304
+      ],
+      "typeVersion": 1,
+      "id": "d12ee579-a095-4fb7-a6d1-3c6c595ce8d6",
+      "name": "Sticky Note7"
+    },
+    {
+      "parameters": {
+        "content": "Converts issues → selector-based actions for screenshot capture (filters out perf noise)."
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        624,
+        496
+      ],
+      "typeVersion": 1,
+      "id": "4c8082f6-50a8-48c3-aae9-94f21d4a3c50",
+      "name": "Sticky Note8"
+    },
+    {
+      "parameters": {
+        "content": "Posts actions to your screenshot renderer (/render) and gets image data back."
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        896,
+        416
+      ],
+      "typeVersion": 1,
+      "id": "234cef0a-2223-40f3-85e2-b776e02d6bd4",
+      "name": "Sticky Note9"
+    },
+    {
+      "parameters": {
+        "content": "Matches returned screenshots to issues (best-effort), enriches issues with data URIs and filenames."
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1168,
+        416
+      ],
+      "typeVersion": 1,
+      "id": "f7a49d0d-84ff-4a2b-9620-fc8c3e03f3a1",
+      "name": "Sticky Note10"
+    },
+    {
+      "parameters": {
+        "content": "Reads previous sheet rows to enable comparison against the last run."
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        560,
+        80
+      ],
+      "typeVersion": 1,
+      "id": "05567fd1-9d7a-4595-88bf-f68e3e7d6ce4",
+      "name": "Sticky Note12"
+    },
+    {
+      "parameters": {
+        "content": "Computes deltas: new/resolved issues, perf delta, and prepares reportForSheet."
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        832,
+        64
+      ],
+      "typeVersion": 1,
+      "id": "a9ec7095-74a0-4a7c-91bb-44f991ccd1d1",
+      "name": "Sticky Note13"
+    },
+    {
+      "parameters": {
+        "content": "Appends run summary + JSON report into the configured Google Sheet."
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1120,
+        48
+      ],
+      "typeVersion": 1,
+      "id": "7d07cdaa-8d58-4e0b-967f-a58eced19f18",
+      "name": "Sticky Note14"
+    },
+    {
+      "parameters": {
+        "content": "Formats a short HTML email with link to sheet, short summary, and first few issues."
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1376,
+        48
+      ],
+      "typeVersion": 1,
+      "id": "acf87ab9-2392-4e5e-b5ba-7c876fc47b86",
+      "name": "Sticky Note15"
+    },
+    {
+      "parameters": {
+        "content": "Sends the email (uses configured SMTP credential)"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1648,
+        48
+      ],
+      "typeVersion": 1,
+      "id": "d5cc87ec-9a0d-491d-a7f3-494f1066305b",
+      "name": "Sticky Note11"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Validate URL": {
+      "main": [
+        [
+          {
+            "node": "Check URL (HEAD)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Landing QA Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate URL",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Return OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check URL (HEAD)": {
+      "main": [
+        [
+          {
+            "node": "Reachable?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reachable?": {
+      "main": [
+        [
+          {
+            "node": "Fetch HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch HTML": {
+      "main": [
+        [
+          {
+            "node": "Font Compliance Check",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Heading Style Check",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Margin/Padding Check",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Bullet Point Format Check1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Link Analysis",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Color Compliance Check",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Image Asset Audit",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Speed Test (PageSpeed API)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Heading Style Check": {
+      "main": [
+        [
+          {
+            "node": "Join Checks (Wait for All)",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Image Asset Audit": {
+      "main": [
+        [
+          {
+            "node": "Join Checks (Wait for All)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Report": {
+      "main": [
+        [
+          {
+            "node": "Prepare Screenshot Actions",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get previous run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Join Checks (Wait for All)": {
+      "main": [
+        [
+          {
+            "node": "Build Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Font Compliance Check": {
+      "main": [
+        [
+          {
+            "node": "Join Checks (Wait for All)",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Margin/Padding Check": {
+      "main": [
+        [
+          {
+            "node": "Join Checks (Wait for All)",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Bullet Point Format Check1": {
+      "main": [
+        [
+          {
+            "node": "Join Checks (Wait for All)",
+            "type": "main",
+            "index": 5
+          }
+        ]
+      ]
+    },
+    "Link Analysis": {
+      "main": [
+        [
+          {
+            "node": "Join Checks (Wait for All)",
+            "type": "main",
+            "index": 6
+          }
+        ]
+      ]
+    },
+    "Color Compliance Check": {
+      "main": [
+        [
+          {
+            "node": "Join Checks (Wait for All)",
+            "type": "main",
+            "index": 4
+          }
+        ]
+      ]
+    },
+    "Prepare Screenshot Actions": {
+      "main": [
+        [
+          {
+            "node": "Capture Screenshots (HTTP Request)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Capture Screenshots (HTTP Request)": {
+      "main": [
+        [
+          {
+            "node": "Attach Screenshots to Issues",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Screenshots to Issues": {
+      "main": [
+        [
+          {
+            "node": "Prepare Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append row in sheet1": {
+      "main": [
+        [
+          {
+            "node": "Build Email Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Email Body": {
+      "main": [
+        [
+          {
+            "node": "Send email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Speed Test (PageSpeed API)": {
+      "main": [
+        [
+          {
+            "node": "Parse Speed Test",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Speed Test": {
+      "main": [
+        [
+          {
+            "node": "Join Checks (Wait for All)",
+            "type": "main",
+            "index": 7
+          }
+        ]
+      ]
+    },
+    "Get previous run": {
+      "main": [
+        [
+          {
+            "node": "Compare with previous",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compare with previous": {
+      "main": [
+        [
+          {
+            "node": "Append row in sheet1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "3d656175-e70e-4fd6-b8a6-8689b701a882",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "8ceb2b7f35946e54b80a63ac14f4aab4b3c9f38b788d4f9303b67860fdb40a2b"
+  },
+  "id": "CREDENTIAL_ID_REDACTED",
+  "tags": []
+}
